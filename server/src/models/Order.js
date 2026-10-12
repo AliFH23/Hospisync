@@ -100,6 +100,10 @@ const orderSchema = new mongoose.Schema(
       wasCompounded: Boolean, // cancelled after preparation = wasted dose (Zero Waste dashboard)
     },
 
+    // "synthetic" = generated demo history for the AI module (scripts/generate-history.js).
+    // Lets us train/demo forecasting, then remove all of it with one command.
+    source: { type: String, enum: ['live', 'synthetic'], default: 'live' },
+
     // Set by the expiry watcher job so each alert is sent once (even with several server instances)
     expiryAlerts: {
       warnedAt: Date,  // "expiring soon" alert sent
@@ -118,6 +122,7 @@ orderSchema.index({ hospital: 1, department: 1, status: 1, createdAt: -1 });  //
 orderSchema.index({ hospital: 1, 'patient.mrn': 1, createdAt: -1 });           // patient history
 orderSchema.index({ status: 1, expiresAt: 1 });                                // near-expiry alerts
 orderSchema.index({ hospital: 1, drug: 1, createdAt: 1 });                     // AI usage history
+orderSchema.index({ source: 1 });                                              // clear synthetic data
 
 // ---------- Helpers ----------
 

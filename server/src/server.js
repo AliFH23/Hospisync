@@ -4,6 +4,7 @@ import app from './app.js';
 import connectDB from './config/db.js';
 import { initSocket } from './socket/index.js';
 import { startExpiryWatcher } from './jobs/expiryWatcher.js';
+import { startStockAdvisor } from './jobs/stockAdvisor.js';
 import './models/index.js'; // registers all models so Mongoose builds their indexes
 
 const PORT = process.env.PORT || 5000;
@@ -18,6 +19,7 @@ try {
   const server = http.createServer(app);
   initSocket(server);
   startExpiryWatcher();
+  startStockAdvisor();
   server.listen(PORT, () => console.log(`Hospisync API + realtime running on http://localhost:${PORT}`));
 } catch (err) {
   console.error('Failed to start server:', err.message);

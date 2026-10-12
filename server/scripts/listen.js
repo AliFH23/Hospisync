@@ -44,3 +44,6 @@ socket.on('order:expiring', (o) =>
 
 socket.on('order:expired', (o) =>
   console.log(`[${time()}] EXPIRED    ${o.orderNumber}  ${o.drugSnapshot.name} passed its beyond-use time: discard and cancel  (${o.departmentCode})`));
+
+socket.on('ai:stock-alert', (s) =>
+  console.log(`[${time()}] AI ${s.status.toUpperCase().padEnd(8)} ${s.name}: ${s.daysOfCover} days of cover, order ${s.recommendedOrder.toLocaleString()} ${s.unit} (lead time ${s.leadTimeDays}d)`));

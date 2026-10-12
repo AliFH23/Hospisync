@@ -1,0 +1,15 @@
+# Web API
+fastapi~=0.143.0
+uvicorn[standard]~=0.54.0
+
+# Data + ML
+pymongo~=4.18.3
+pandas~=3.0.6
+numpy~=2.5.4
+scikit-learn~=1.9.1
+
+# Config
+python-dotenv~=1.2.4
+
+# Tests (FastAPI TestClient)
+httpx~=0.28.1

@@ -9,6 +9,7 @@ import userRoutes from './routes/userRoutes.js';
 import drugRoutes from './routes/drugRoutes.js';
 import orderRoutes from './routes/orderRoutes.js';
 import reportRoutes from './routes/reportRoutes.js';
+import aiRoutes from './routes/aiRoutes.js';
 
 const app = express();
 
@@ -41,6 +42,8 @@ app.use('/api/users', userRoutes);
 app.use('/api/drugs', drugRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/reports', reportRoutes);
+app.use('/api/ai', aiRoutes);
+
 
 // Must stay last
 app.use(notFound);
