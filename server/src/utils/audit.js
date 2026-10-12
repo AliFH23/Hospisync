@@ -10,9 +10,10 @@ import { AuditLog } from '../models/index.js';
  * @param {'Order'|'Drug'|'User'|'Hospital'} p.entityType
  * @param {*} p.entityId
  * @param {{ before?, after? }} [p.changes]
+ * @param {import('mongoose').ClientSession} [p.session] - pass inside a transaction
  */
-export function logAudit({ req, hospital, actor, action, entityType, entityId, changes }) {
-  return AuditLog.create({
+export async function logAudit({ req, hospital, actor, action, entityType, entityId, changes, session }) {
+  const doc = {
     hospital,
     actor: actor
       ? { user: actor._id, role: actor.role, name: actor.fullName }
@@ -21,5 +22,8 @@ export function logAudit({ req, hospital, actor, action, entityType, entityId, c
     entity: { type: entityType, id: entityId },
     changes,
     meta: req ? { ip: req.ip, userAgent: req.get('user-agent') } : undefined,
-  });
+  };
+  // Array form is required by Mongoose when passing a session
+  const [entry] = await AuditLog.create([doc], session ? { session } : undefined);
+  return entry;
 }

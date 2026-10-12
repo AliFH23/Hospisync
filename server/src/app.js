@@ -6,6 +6,9 @@ import { notFound, errorHandler } from './middleware/errorHandler.js';
 import { apiLimiter, rejectMongoOperators } from './middleware/security.js';
 import authRoutes from './routes/authRoutes.js';
 import userRoutes from './routes/userRoutes.js';
+import drugRoutes from './routes/drugRoutes.js';
+import orderRoutes from './routes/orderRoutes.js';
+import reportRoutes from './routes/reportRoutes.js';
 
 const app = express();
 
@@ -35,6 +38,9 @@ app.get('/api/health', (_req, res) => {
 // ---- Routes ----
 app.use('/api/auth', authRoutes);
 app.use('/api/users', userRoutes);
+app.use('/api/drugs', drugRoutes);
+app.use('/api/orders', orderRoutes);
+app.use('/api/reports', reportRoutes);
 
 // Must stay last
 app.use(notFound);

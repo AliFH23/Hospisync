@@ -99,6 +99,12 @@ const orderSchema = new mongoose.Schema(
       at: Date,
       wasCompounded: Boolean, // cancelled after preparation = wasted dose (Zero Waste dashboard)
     },
+
+    // Set by the expiry watcher job so each alert is sent once (even with several server instances)
+    expiryAlerts: {
+      warnedAt: Date,  // "expiring soon" alert sent
+      expiredAt: Date, // "expired" alert sent
+    },
   },
   {
     timestamps: true,

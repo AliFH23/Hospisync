@@ -3,16 +3,14 @@ import AppError from '../utils/AppError.js';
 import { verifyToken } from '../utils/jwt.js';
 
 /**
- * Requires a valid "Authorization: Bearer <token>" header.
- * On success sets req.user = { _id, fullName, email, role, hospital, department }.
- * Invalid/expired tokens throw JWT errors, which errorHandler turns into 401s.
+ * Verifies a JWT and re-checks the account in the database.
+ * Shared by HTTP (protect) and Socket.io, so both authenticate identically.
+ * @returns {{ user: object, payload: object }}
  */
-export async function protect(req, _res, next) {
-  const header = req.get('authorization') || '';
-  const [scheme, token] = header.split(' ');
-  if (scheme !== 'Bearer' || !token) throw AppError.unauthorized('Please log in to continue');
+export async function authenticateToken(token) {
+  if (!token) throw AppError.unauthorized('Please log in to continue');
 
-  const payload = verifyToken(token);
+  const payload = verifyToken(token); // throws JWT errors → 401 via errorHandler
 
   // Always re-check the database: a token stays "valid" for 8h, but the account may change sooner.
   const user = await User.findById(payload.sub)
@@ -32,13 +30,28 @@ export async function protect(req, _res, next) {
     throw AppError.unauthorized('Your account details changed. Please log in again.');
   }
 
-  req.user = {
-    _id: user._id,
-    fullName: user.fullName,
-    email: user.email,
-    role: user.role,
-    hospital: user.hospital,
-    department: user.department,
+  return {
+    payload,
+    user: {
+      _id: user._id,
+      fullName: user.fullName,
+      email: user.email,
+      role: user.role,
+      hospital: user.hospital,
+      department: user.department,
+    },
   };
+}
+
+/**
+ * Requires a valid "Authorization: Bearer <token>" header.
+ * On success sets req.user = { _id, fullName, email, role, hospital, department }.
+ */
+export async function protect(req, _res, next) {
+  const [scheme, token] = (req.get('authorization') || '').split(' ');
+  if (scheme !== 'Bearer' || !token) throw AppError.unauthorized('Please log in to continue');
+
+  const { user } = await authenticateToken(token);
+  req.user = user;
   next();
 }

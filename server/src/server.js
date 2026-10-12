@@ -1,6 +1,9 @@
 import 'dotenv/config';
+import http from 'node:http';
 import app from './app.js';
 import connectDB from './config/db.js';
+import { initSocket } from './socket/index.js';
+import { startExpiryWatcher } from './jobs/expiryWatcher.js';
 import './models/index.js'; // registers all models so Mongoose builds their indexes
 
 const PORT = process.env.PORT || 5000;
@@ -10,7 +13,12 @@ try {
     throw new Error('JWT_SECRET is missing or too short (min 32 characters) in .env');
   }
   await connectDB();
-  app.listen(PORT, () => console.log(`Hospisync API running on http://localhost:${PORT}`));
+
+  // Express and Socket.io share one HTTP server (same port)
+  const server = http.createServer(app);
+  initSocket(server);
+  startExpiryWatcher();
+  server.listen(PORT, () => console.log(`Hospisync API + realtime running on http://localhost:${PORT}`));
 } catch (err) {
   console.error('Failed to start server:', err.message);
   process.exit(1);
