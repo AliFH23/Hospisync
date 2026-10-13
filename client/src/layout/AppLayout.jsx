@@ -16,28 +16,35 @@ import LogoutIcon from '@mui/icons-material/Logout';
 import SpaceDashboardIcon from '@mui/icons-material/SpaceDashboard';
 import ListAltIcon from '@mui/icons-material/ListAlt';
 import MedicationIcon from '@mui/icons-material/Medication';
-import NoteAddIcon from '@mui/icons-material/NoteAdd';
 import Inventory2Icon from '@mui/icons-material/Inventory2';
 import AutoGraphIcon from '@mui/icons-material/AutoGraph';
 import DeleteSweepIcon from '@mui/icons-material/DeleteSweep';
 import GroupIcon from '@mui/icons-material/Group';
+import AssignmentIndIcon from '@mui/icons-material/AssignmentInd';
+import EditNoteIcon from '@mui/icons-material/EditNote';
+import PhoneInTalkIcon from '@mui/icons-material/PhoneInTalk';
 import Logo from '../components/Logo';
 import PreferenceToggles from '../components/PreferenceToggles';
 import { useAuth } from '../auth/AuthContext';
 import { useSocket } from '../socket/SocketProvider';
+import { nameParts } from '../utils/orders';
 
 const DRAWER = 256;
 
 // Navigation per role: each section is shown only if the user has at least one item in it
 const NAV = [
+  { section: 'clinical', items: [
+    { to: '/prescriptions', key: 'myPrescriptions', icon: AssignmentIndIcon, roles: ['doctor'] },
+    { to: '/prescribe', key: 'prescribe', icon: EditNoteIcon, roles: ['doctor'] },
+  ] },
   { section: 'ward', items: [
     { to: '/ward', key: 'wardOrders', icon: SpaceDashboardIcon, roles: ['nurse'] },
-    { to: '/ward/new', key: 'newOrder', icon: NoteAddIcon, roles: ['nurse'] },
+    { to: '/ward/new', key: 'verbalOrder', icon: PhoneInTalkIcon, roles: ['nurse'] },
   ] },
   { section: 'pharmacy', items: [
     { to: '/queue', key: 'queue', icon: SpaceDashboardIcon, roles: ['pharmacist', 'admin'] },
     { to: '/orders', key: 'orders', icon: ListAltIcon, roles: ['pharmacist', 'admin'] },
-    { to: '/formulary', key: 'formulary', icon: MedicationIcon, roles: ['pharmacist', 'admin', 'nurse'] },
+    { to: '/formulary', key: 'formulary', icon: MedicationIcon, roles: ['pharmacist', 'admin', 'doctor', 'nurse'] },
   ] },
   { section: 'insights', items: [
     { to: '/stock', key: 'stock', icon: Inventory2Icon, roles: ['pharmacist', 'admin'] },
@@ -77,7 +84,7 @@ function greetingKey() {
 function Sidebar({ onNavigate }) {
   const { t } = useTranslation();
   const { user, logout } = useAuth();
-  const initials = user.fullName.split(' ').map((p) => p[0]).slice(0, 2).join('');
+  const { initials } = nameParts(user.fullName);
 
   return (
     <Box sx={{ height: '100%', bgcolor: 'sidebar.bg', color: 'sidebar.text', display: 'flex', flexDirection: 'column', p: 2 }}>
@@ -165,7 +172,7 @@ export default function AppLayout() {
           {!desktop && <IconButton onClick={() => setOpen(true)}><MenuIcon /></IconButton>}
           <Box sx={{ minWidth: 0 }}>
             <Stack direction="row" spacing={1.5} sx={{ alignItems: 'center' }}>
-              <Typography variant="h5" noWrap>{t(`greeting.${greetingKey()}`, { name: user.fullName.split(' ')[0] })}</Typography>
+              <Typography variant="h5" noWrap>{t(`greeting.${greetingKey()}`, { name: nameParts(user.fullName).short })}</Typography>
               <LiveBadge />
             </Stack>
             <Typography variant="body2" color="text.secondary" noWrap>

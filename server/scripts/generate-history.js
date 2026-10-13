@@ -106,15 +106,19 @@ async function main() {
   const hospital = await Hospital.findOne({ code: 'DEMO' }).lean();
   if (!hospital) throw new Error('Demo hospital not found. Run "npm run seed" first.');
 
-  const [drugs, nurses, pharmacists] = await Promise.all([
+  const [drugs, nurses, pharmacists, doctors] = await Promise.all([
     Drug.find({ hospital: hospital._id }).lean(),
     User.find({ hospital: hospital._id, role: 'nurse' }).lean(),
     User.find({ hospital: hospital._id, role: 'pharmacist' }).lean(),
+    User.find({ hospital: hospital._id, role: 'doctor' }).lean(),
   ]);
-  if (!nurses.length || !pharmacists.length) throw new Error('Need at least one nurse and one pharmacist. Run "npm run seed".');
+  if (!nurses.length || !pharmacists.length || !doctors.length) {
+    throw new Error('Need at least one doctor, nurse and pharmacist. Run "npm run seed".');
+  }
 
   const deptByCode = Object.fromEntries(hospital.departments.map((d) => [d.code, d]));
   const nurseFor = (deptId) => nurses.find((n) => String(n.department) === String(deptId)) ?? pick(nurses);
+  const doctorFor = (deptId) => doctors.find((d) => String(d.department) === String(deptId)) ?? pick(doctors);
 
   const today = new Date();
   today.setUTCHours(0, 0, 0, 0);
@@ -143,6 +147,7 @@ async function main() {
         if (!dept) continue;
 
         const nurse = nurseFor(dept._id);
+        const doctor = doctorFor(dept._id);
         const pharmacist = pick(pharmacists);
         const pt = patientFor(deptCode);
         const prescribed = round(p.dose(), 2);
@@ -162,7 +167,7 @@ async function main() {
         const r = rand();
         const outcome = r < 0.04 ? 'wasted' : r < 0.05 ? 'cancelledEarly' : 'delivered';
 
-        const history = [{ from: null, to: 'pending', by: nurse._id, role: 'nurse', at: createdAt }];
+        const history = [{ from: null, to: 'pending', by: doctor._id, role: 'doctor', at: createdAt }];
         const order = {
           orderNumber: `HS-${createdAt.toISOString().slice(0, 10).replace(/-/g, '')}-S${String(++seq).padStart(5, '0')}`,
           hospital: hospital._id,
@@ -179,27 +184,32 @@ async function main() {
           priority,
           priorityRank: PRIORITY_RANK[priority],
           requiredBy,
-          requestedBy: nurse._id,
+          requestedBy: doctor._id,
+          prescribedBy: doctor._id,
+          prescriberName: doctor.fullName,
+          entryType: 'cpoe',
           source: 'synthetic',
           createdAt,
         };
 
         if (outcome === 'cancelledEarly') {
           const at = addMin(createdAt, uniform(5, 40));
-          history.push({ from: 'pending', to: 'cancelled', by: nurse._id, role: 'nurse', at, note: 'Order no longer needed' });
+          history.push({ from: 'pending', to: 'cancelled', by: doctor._id, role: 'doctor', at, note: 'Order no longer needed' });
           Object.assign(order, {
             status: 'cancelled',
-            cancellation: { reason: 'Order no longer needed', by: nurse._id, at, wasCompounded: false },
+            cancellation: { reason: 'Order no longer needed', by: doctor._id, at, wasCompounded: false },
           });
         } else {
-          const preparingAt = addMin(createdAt, priority === 'emergency' ? uniform(2, 10) : uniform(10, 45));
+          const verifiedAt = addMin(createdAt, priority === 'emergency' ? uniform(1, 5) : uniform(5, 25));
+          const preparingAt = addMin(verifiedAt, priority === 'emergency' ? uniform(1, 5) : uniform(5, 20));
           const readyAt = addMin(preparingAt, uniform(15, 50));
           history.push(
-            { from: 'pending', to: 'preparing', by: pharmacist._id, role: 'pharmacist', at: preparingAt },
+            { from: 'pending', to: 'verified', by: pharmacist._id, role: 'pharmacist', at: verifiedAt },
+            { from: 'verified', to: 'preparing', by: pharmacist._id, role: 'pharmacist', at: preparingAt },
             { from: 'preparing', to: 'ready', by: pharmacist._id, role: 'pharmacist', at: readyAt }
           );
           Object.assign(order, {
-            preparedBy: pharmacist._id, preparingAt, readyAt,
+            verifiedBy: pharmacist._id, verifiedAt, preparedBy: pharmacist._id, preparingAt, readyAt,
             expiresAt: new Date(readyAt.getTime() + drug.stability.beyondUseHours * 3600e3),
           });
 

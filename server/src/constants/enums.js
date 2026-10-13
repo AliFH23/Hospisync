@@ -1,6 +1,7 @@
 // Central enums: one source of truth shared by models, services, and (later) the AI module.
 
 export const ROLES = Object.freeze({
+  DOCTOR: 'doctor',
   NURSE: 'nurse',
   PHARMACIST: 'pharmacist',
   ADMIN: 'admin',
@@ -39,7 +40,8 @@ export const PRIORITY = Object.freeze({
 export const PRIORITY_RANK = Object.freeze({ emergency: 1, urgent: 2, routine: 3 });
 
 export const ORDER_STATUS = Object.freeze({
-  PENDING: 'pending',
+  PENDING: 'pending',     // prescribed, waiting for pharmacist verification
+  VERIFIED: 'verified',   // pharmacist checked the prescription clinically
   PREPARING: 'preparing',
   READY: 'ready',
   DELIVERED: 'delivered',
@@ -49,7 +51,8 @@ export const ORDER_STATUS = Object.freeze({
 // ---- Workflow state machine ----
 // Allowed transitions: anything not listed here is rejected.
 export const TRANSITIONS = Object.freeze({
-  pending:   ['preparing', 'cancelled'],
+  pending:   ['verified', 'cancelled'], // pharmacist verifies, or rejects (= cancelled with a reason)
+  verified:  ['preparing', 'cancelled'],
   preparing: ['ready', 'cancelled'],
   ready:     ['delivered', 'cancelled'],
   delivered: [], // terminal
@@ -58,15 +61,28 @@ export const TRANSITIONS = Object.freeze({
 
 // Which roles may move an order INTO each status.
 export const TRANSITION_ROLES = Object.freeze({
+  verified:  [ROLES.PHARMACIST],
   preparing: [ROLES.PHARMACIST],
   ready:     [ROLES.PHARMACIST],
   delivered: [ROLES.NURSE, ROLES.PHARMACIST], // receiving nurse confirms handover
-  cancelled: [ROLES.NURSE, ROLES.PHARMACIST, ROLES.ADMIN],
+  cancelled: [ROLES.DOCTOR, ROLES.NURSE, ROLES.PHARMACIST, ROLES.ADMIN],
 });
 
 export const AUDIT_ACTIONS = Object.freeze([
-  'ORDER_CREATED', 'ORDER_STATUS_CHANGED', 'ORDER_CANCELLED', 'ORDER_UPDATED',
+  'ORDER_CREATED', 'ORDER_STATUS_CHANGED', 'ORDER_CANCELLED', 'ORDER_UPDATED', 'ORDER_COSIGNED',
   'DRUG_CREATED', 'DRUG_UPDATED', 'STOCK_ADJUSTED',
   'USER_CREATED', 'USER_UPDATED', 'USER_DEACTIVATED', 'LOGIN_SUCCESS', 'LOGIN_FAILED',
   'HOSPITAL_CREATED', 'HOSPITAL_UPDATED',
 ]);
+
+
+// Roles that belong to one ward (department) of the hospital
+export const WARD_ROLES = Object.freeze([ROLES.DOCTOR, ROLES.NURSE]);
+
+// ---- Verbal / telephone orders (entered by a nurse on a doctor's behalf) ----
+export const ENTRY_TYPES = Object.freeze({ CPOE: 'cpoe', VERBAL: 'verbal' });
+export const VERBAL_ORDER_RULES = Object.freeze({
+  allowedPriorities: ['emergency', 'urgent'], // routine orders must be entered by the doctor
+  blockedCategories: ['chemotherapy'],        // ASCO/ONS safety standards: no verbal chemotherapy orders
+  cosignWithinHours: 24,                      // the prescriber must co-sign within this time
+});

@@ -1,43 +1,71 @@
 import mongoose from 'mongoose';
-import { Order, Drug, Hospital } from '../models/index.js';
+import { Order, Drug, Hospital, User } from '../models/index.js';
 import AppError from '../utils/AppError.js';
 import { logAudit } from '../utils/audit.js';
-import { ORDER_STATUS } from '../constants/enums.js';
+import { ORDER_STATUS, ROLES, ENTRY_TYPES, VERBAL_ORDER_RULES } from '../constants/enums.js';
 import { EVENTS, emitOrderEvent, emitLowStock } from '../socket/events.js';
 
-const ACTIVE_STATUSES = [ORDER_STATUS.PENDING, ORDER_STATUS.PREPARING, ORDER_STATUS.READY];
+const ACTIVE_STATUSES = [ORDER_STATUS.PENDING, ORDER_STATUS.VERIFIED, ORDER_STATUS.PREPARING, ORDER_STATUS.READY];
 
 // Copies only the listed keys. The client can never set status, requestedBy, hospital, etc.
 const pick = (obj, keys) =>
   Object.fromEntries(keys.filter((k) => obj?.[k] !== undefined).map((k) => [k, obj[k]]));
 
 /**
- * POST /api/orders  (nurse)
+ * POST /api/orders  (doctor, or nurse for a verbal order)
  * Body:
  * {
  *   drugId, route, priority, requiredBy, notes?, infusionDurationMin?,
  *   patient: { mrn, name, weightKg?, heightCm?, allergies?[] },
  *   dose: { prescribedValue, basis?, unit? },   // basis/unit default to the drug's
  *   diluent?: { name, volumeMl },
- *   confirmDuplicate?: true                      // override the duplicate-order guard
+ *   confirmDuplicate?: true,                     // override the duplicate-order guard
+ *   verbalOrder?: { prescriberId, readBack: true } // nurse only: telephone/verbal order from a doctor
  * }
+ *
+ * Doctors enter their own prescriptions (CPOE). A nurse may only enter a verbal order:
+ * emergency/urgent, never chemotherapy, read back to the doctor, and co-signed by them within 24 h.
  */
 export async function createOrder(req, res) {
   const body = req.body ?? {};
-  const nurse = req.user;
+  const author = req.user;
 
   if (!body.drugId) throw AppError.badRequest('drugId is required');
   if (!body.patient || typeof body.patient !== 'object') throw AppError.badRequest('patient is required');
   if (!body.dose || typeof body.dose !== 'object') throw AppError.badRequest('dose is required');
 
-  // 1) Ward comes from the nurse's account, never from the request
-  const hospital = await Hospital.findById(nurse.hospital).select('departments').lean();
-  const department = hospital?.departments.find((d) => String(d._id) === String(nurse.department));
+  // 1) Ward comes from the author's account, never from the request
+  const hospital = await Hospital.findById(author.hospital).select('departments').lean();
+  const department = hospital?.departments.find((d) => String(d._id) === String(author.department));
   if (!department?.isActive) throw AppError.forbidden('Your account is not linked to an active department');
 
   // 2) Drug must exist, be active, and belong to this hospital
-  const drug = await Drug.findOne({ _id: body.drugId, hospital: nurse.hospital, isActive: true }).lean();
+  const drug = await Drug.findOne({ _id: body.drugId, hospital: author.hospital, isActive: true }).lean();
   if (!drug) throw AppError.notFound('Drug not found in your hospital formulary');
+
+  // 3) Who prescribes it
+  let prescriber = author;
+  let verbal = null;
+  if (author.role === ROLES.NURSE) {
+    const v = body.verbalOrder;
+    if (!v || typeof v !== 'object') {
+      throw AppError.forbidden('Orders are prescribed by doctors. Nurses can only enter a verbal order on a doctor\'s behalf.');
+    }
+    if (!VERBAL_ORDER_RULES.allowedPriorities.includes(body.priority)) {
+      throw AppError.badRequest('Verbal orders are only accepted for emergency or urgent priority. Ask the doctor to enter routine orders.');
+    }
+    if (VERBAL_ORDER_RULES.blockedCategories.includes(drug.category)) {
+      throw new AppError('Verbal orders are not accepted for chemotherapy. The doctor must enter it.', 422);
+    }
+    if (v.readBack !== true) throw AppError.badRequest('Read the order back to the doctor and confirm it before sending');
+    prescriber = await User.findOne({ _id: v.prescriberId, hospital: author.hospital, role: ROLES.DOCTOR, isActive: true })
+      .select('fullName').lean();
+    if (!prescriber) throw AppError.badRequest('Choose the prescribing doctor');
+    verbal = {
+      readBack: true,
+      cosignDueAt: new Date(Date.now() + VERBAL_ORDER_RULES.cosignWithinHours * 3600 * 1000),
+    };
+  }
 
   // 3) Route must be allowed for this drug
   if (!drug.allowedRoutes.includes(body.route)) {
@@ -63,7 +91,7 @@ export async function createOrder(req, res) {
 
   // Build the order (only whitelisted fields)
   const order = new Order({
-    hospital: nurse.hospital,
+    hospital: author.hospital,
     department: department._id,
     departmentCode: department.code,
     patient,
@@ -81,8 +109,13 @@ export async function createOrder(req, res) {
     priority: body.priority,
     requiredBy: body.requiredBy,
     notes: body.notes,
-    requestedBy: nurse._id,
+    requestedBy: author._id,
+    prescribedBy: prescriber._id,
+    prescriberName: prescriber.fullName,
+    entryType: verbal ? ENTRY_TYPES.VERBAL : ENTRY_TYPES.CPOE,
+    ...(verbal && { verbalOrder: verbal }),
   });
+  order.$locals.creatorRole = author.role;
 
   // Runs schema validation + computes BSA and the final dose
   await order.validate();
@@ -99,7 +132,7 @@ export async function createOrder(req, res) {
   // 7) Duplicate guard: same patient + same drug already in progress
   if (!body.confirmDuplicate) {
     const dup = await Order.findOne({
-      hospital: nurse.hospital,
+      hospital: author.hospital,
       'patient.mrn': order.patient.mrn,
       drug: drug._id,
       status: { $in: ACTIVE_STATUSES },
@@ -118,12 +151,13 @@ export async function createOrder(req, res) {
     await order.save({ session });
     await logAudit({
       req, session,
-      hospital: nurse.hospital, actor: nurse,
+      hospital: author.hospital, actor: author,
       action: 'ORDER_CREATED', entityType: 'Order', entityId: order._id,
       changes: {
         after: {
           orderNumber: order.orderNumber, drug: drug.name, priority: order.priority,
           dose: `${order.dose.calculatedValue} ${unit}`, mrn: order.patient.mrn,
+          prescriber: prescriber.fullName, entryType: order.entryType,
         },
       },
     });
@@ -156,6 +190,10 @@ function withTimeFlags(o, now = Date.now()) {
     minutesToExpiry: o.status === ORDER_STATUS.READY && msToExpiry != null ? Math.round(msToExpiry / 60000) : null,
     isExpired: o.status === ORDER_STATUS.READY && msToExpiry != null && msToExpiry <= 0,
     expiringSoon: o.status === ORDER_STATUS.READY && msToExpiry != null && msToExpiry > 0 && msToExpiry <= 60 * 60000,
+    // Verbal order still waiting for the doctor's signature
+    needsCosign: o.entryType === ENTRY_TYPES.VERBAL && !o.verbalOrder?.cosignedAt && o.status !== ORDER_STATUS.CANCELLED,
+    cosignOverdue: o.entryType === ENTRY_TYPES.VERBAL && !o.verbalOrder?.cosignedAt && o.status !== ORDER_STATUS.CANCELLED
+      && o.verbalOrder?.cosignDueAt && new Date(o.verbalOrder.cosignDueAt).getTime() < now,
   };
 }
 
@@ -179,23 +217,24 @@ function parseDate(raw, name) {
 }
 
 /**
- * Base filter every read uses: always this hospital, and nurses only see their own ward.
+ * Base filter every read uses: always this hospital; nurses see their ward, doctors their own prescriptions.
  */
 function scopeFor(user) {
   const filter = { hospital: user.hospital };
-  if (user.role === 'nurse') filter.department = user.department;
+  if (user.role === ROLES.NURSE) filter.department = user.department;
+  if (user.role === ROLES.DOCTOR) filter.prescribedBy = user._id; // a doctor follows their own prescriptions
   return filter;
 }
 
 /**
  * GET /api/orders/queue  (pharmacist, admin)
  * The pharmacist work queue: active orders, emergency first, then earliest deadline.
- * Optional: ?status=pending (or preparing / ready)
+ * Optional: ?status=pending (or verified / preparing / ready)
  */
 export async function getQueue(req, res) {
   const statuses = parseStatuses(req.query.status) ?? ACTIVE_STATUSES;
   if (statuses.some((s) => !ACTIVE_STATUSES.includes(s))) {
-    throw AppError.badRequest('The queue only contains active statuses: pending, preparing, ready');
+    throw AppError.badRequest(`The queue only contains active statuses: ${ACTIVE_STATUSES.join(', ')}`);
   }
 
   const orders = await Order.find({ ...scopeFor(req.user), status: { $in: statuses } })
@@ -238,7 +277,7 @@ export async function listOrders(req, res) {
   if (statuses) filter.status = { $in: statuses };
 
   if (department !== undefined) {
-    if (req.user.role === 'nurse') throw AppError.forbidden('Nurses can only view their own department');
+    if (req.user.role === ROLES.NURSE) throw AppError.forbidden('Nurses can only view their own department');
     filter.department = department; // invalid ObjectId → CastError → 400
   }
   if (mrn !== undefined) filter['patient.mrn'] = String(mrn).trim().toUpperCase();
@@ -279,7 +318,7 @@ export async function listOrders(req, res) {
  */
 export async function getOrder(req, res) {
   const order = await Order.findOne({ _id: req.params.id, ...scopeFor(req.user) })
-    .populate('requestedBy preparedBy receivedBy', 'fullName role employeeId')
+    .populate('requestedBy prescribedBy verifiedBy preparedBy receivedBy', 'fullName role employeeId')
     .populate('statusHistory.by', 'fullName role')
     .populate('cancellation.by', 'fullName role')
     .lean();
@@ -297,13 +336,14 @@ export async function getOrder(req, res) {
 /**
  * PATCH /api/orders/:id/status
  * Body: { status, note?, reason?, version? }
- *   status   preparing | ready | delivered | cancelled
+ *   status   verified | preparing | ready | delivered | cancelled
  *   reason   required when cancelling
  *   version  the order's __v as the client last saw it. If someone changed the
  *            order since, the request is rejected instead of acting on stale data.
  *
  * Who can do what is enforced by the state machine in the Order model:
- *   pharmacist → preparing, ready · nurse/pharmacist → delivered · anyone → cancelled
+ *   pharmacist → verified, preparing, ready · nurse/pharmacist → delivered · any role → cancelled
+ *   (a pharmacist cancelling a pending order = rejecting the prescription)
  *
  * Moving to "preparing" deducts the dose from the drug's stock (same unit as the dose).
  * Everything happens in ONE transaction: status, stock, and audit entries all succeed or none do.
@@ -388,4 +428,27 @@ export async function updateOrderStatus(req, res) {
   if (result.stock?.isLowStock) emitLowStock(result.order.hospital, result.stock);
 
   res.json({ success: true, ...result });
+}
+
+/**
+ * PATCH /api/orders/:id/cosign  (doctor)
+ * The prescribing doctor confirms a verbal order a nurse entered in their name.
+ */
+export async function cosignOrder(req, res) {
+  const order = await Order.findOne({ _id: req.params.id, hospital: req.user.hospital });
+  if (!order) throw AppError.notFound('Order not found');
+  order.cosign(req.user); // 403/409 if not their order, not verbal, or already signed
+
+  await mongoose.connection.transaction(async (session) => {
+    await order.save({ session });
+    await logAudit({
+      req, session, hospital: order.hospital, actor: req.user,
+      action: 'ORDER_COSIGNED', entityType: 'Order', entityId: order._id,
+      changes: { after: { cosignedAt: order.verbalOrder.cosignedAt, enteredBy: String(order.requestedBy) } },
+    });
+  });
+
+  const updated = withTimeFlags(order.toObject());
+  emitOrderEvent(EVENTS.ORDER_UPDATED, updated);
+  res.json({ success: true, order: updated });
 }

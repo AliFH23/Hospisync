@@ -28,7 +28,13 @@ export default function App() {
         <Route element={<AppLayout />}>
           <Route index element={<Home />} />
 
-          {/* Nurse */}
+          {/* Doctor: own prescriptions */}
+          <Route element={<RequireAuth roles={['doctor']} />}>
+            <Route path="/prescriptions" element={<WardPage />} />
+            <Route path="/prescribe" element={<NewOrderPage />} />
+          </Route>
+
+          {/* Nurse: ward orders + verbal orders */}
           <Route element={<RequireAuth roles={['nurse']} />}>
             <Route path="/ward" element={<WardPage />} />
             <Route path="/ward/new" element={<NewOrderPage />} />

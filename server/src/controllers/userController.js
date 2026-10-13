@@ -1,7 +1,7 @@
 import { User, Hospital } from '../models/index.js';
 import AppError from '../utils/AppError.js';
 import { logAudit } from '../utils/audit.js';
-import { ROLES } from '../constants/enums.js';
+import { ROLES, WARD_ROLES } from '../constants/enums.js';
 
 const PUBLIC_FIELDS = 'fullName email role employeeId department isActive lastLoginAt createdAt';
 const pick = (obj, keys) =>
@@ -37,14 +37,14 @@ function checkPassword(pw) {
 
 /**
  * POST /api/users  (admin)
- * Body: { fullName, email, password, role, employeeId, department? }   department is required for nurses
+ * Body: { fullName, email, password, role, employeeId, department? }   department is required for doctors and nurses
  */
 export async function createUser(req, res) {
   const b = pick(req.body ?? {}, ['fullName', 'email', 'password', 'role', 'employeeId', 'department']);
   checkPassword(b.password);
   if (!Object.values(ROLES).includes(b.role)) throw AppError.badRequest('Invalid role');
-  if (b.role === ROLES.NURSE) await assertDepartment(req.user.hospital, b.department);
-  else delete b.department; // only nurses belong to a ward
+  if (WARD_ROLES.includes(b.role)) await assertDepartment(req.user.hospital, b.department);
+  else delete b.department; // only doctors and nurses belong to a ward
 
   const user = await User.create({ ...b, hospital: req.user.hospital }); // duplicate email / employee ID → 409
   await logAudit({
@@ -81,10 +81,10 @@ export async function updateUser(req, res) {
     user.role = b.role;
   }
   const finalRole = user.role;
-  if (finalRole === ROLES.NURSE) {
+  if (WARD_ROLES.includes(finalRole)) {
     if (b.department !== undefined) await assertDepartment(req.user.hospital, b.department);
     if (b.department !== undefined) user.department = b.department;
-    if (!user.department) throw AppError.badRequest('Nurses must belong to a department');
+    if (!user.department) throw AppError.badRequest('Doctors and nurses must belong to a department');
   } else {
     user.department = undefined;
   }
@@ -114,4 +114,21 @@ export async function updateUser(req, res) {
   });
 
   res.json({ success: true, user: user.toJSON() });
+}
+
+/**
+ * GET /api/users/prescribers  (any logged-in user)
+ * Active doctors of the hospital: used by nurses to pick who gave a verbal order.
+ * Returns names and wards only, never emails or other account details.
+ */
+export async function listPrescribers(req, res) {
+  const [doctors, hospital] = await Promise.all([
+    User.find({ hospital: req.user.hospital, role: ROLES.DOCTOR, isActive: true }).select('fullName department').sort({ fullName: 1 }).lean(),
+    Hospital.findById(req.user.hospital).select('departments').lean(),
+  ]);
+  const code = Object.fromEntries((hospital?.departments ?? []).map((d) => [String(d._id), d.code]));
+  res.json({
+    success: true,
+    doctors: doctors.map((d) => ({ _id: d._id, fullName: d.fullName, departmentCode: code[String(d.department)] ?? null })),
+  });
 }

@@ -9,7 +9,7 @@ export const EVENTS = Object.freeze({
 
 /**
  * Sends an order event to everyone who should see it:
- * the pharmacy of that hospital + the nurses of the ordering ward.
+ * the pharmacy of that hospital + the nurses of the ordering ward + the prescribing doctor.
  * Call ONLY after the database transaction has committed,
  * so screens never show a change that was rolled back.
  */
@@ -20,9 +20,9 @@ export function emitOrderEvent(event, order) {
   const payload = { ...order };
   delete payload.statusHistory; // detail endpoint only, keeps messages small
 
-  io.to(rooms.pharmacy(order.hospital))
-    .to(rooms.department(order.department))
-    .emit(event, payload);
+  let target = io.to(rooms.pharmacy(order.hospital)).to(rooms.department(order.department));
+  if (order.prescribedBy) target = target.to(rooms.user(order.prescribedBy));
+  target.emit(event, payload);
 }
 
 // Low-stock warning goes to the pharmacy only

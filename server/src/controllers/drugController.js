@@ -8,11 +8,13 @@ import { ROLES, DRUG_CATEGORIES } from '../constants/enums.js';
 const NURSE_FIELDS = 'code name genericName category isHighAlert controlledSchedule dosing allowedRoutes stability isActive';
 const STAFF_FIELDS = `${NURSE_FIELDS} unitCost stock updatedAt`;
 
-const fieldsFor = (role) => (role === ROLES.NURSE ? NURSE_FIELDS : STAFF_FIELDS);
+// Clinicians (doctors, nurses) see clinical fields only; pharmacy staff also see stock and cost
+const CLINICAL_ROLES = [ROLES.NURSE, ROLES.DOCTOR];
+const fieldsFor = (role) => (CLINICAL_ROLES.includes(role) ? NURSE_FIELDS : STAFF_FIELDS);
 
 // Adds isLowStock for staff (virtuals don't run on .lean() results)
 function shape(drug, role) {
-  if (role === ROLES.NURSE || !drug.stock) return drug;
+  if (CLINICAL_ROLES.includes(role) || !drug.stock) return drug;
   return { ...drug, isLowStock: drug.stock.onHand <= drug.stock.reorderLevel };
 }
 
@@ -51,7 +53,7 @@ export async function listDrugs(req, res) {
   }
 
   if (lowStock === 'true') {
-    if (role === ROLES.NURSE) throw AppError.forbidden('Stock information is not available for your role');
+    if (CLINICAL_ROLES.includes(role)) throw AppError.forbidden('Stock information is not available for your role');
     filter.$expr = { $lte: ['$stock.onHand', '$stock.reorderLevel'] };
   }
 

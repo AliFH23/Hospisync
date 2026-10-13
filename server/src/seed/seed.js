@@ -29,9 +29,11 @@ async function audit(hospital, actor, action, entityType, entityId, changes) {
   });
 }
 
-async function createOrder(hospital, nurse, drug, data) {
-  const dept = hospital.departments.id(nurse.department);
-  const order = await Order.create({
+// author = who types it (doctor, or nurse for a verbal order); prescriber = responsible doctor
+async function createOrder(hospital, author, drug, data, prescriber = author) {
+  const dept = hospital.departments.id(author.department);
+  const verbal = author._id !== prescriber._id;
+  const order = new Order({
     hospital: hospital._id,
     department: dept._id,
     departmentCode: dept.code,
@@ -42,10 +44,16 @@ async function createOrder(hospital, nurse, drug, data) {
       beyondUseHours: drug.stability.beyondUseHours,
       unitCost: drug.unitCost.amount,
     },
-    requestedBy: nurse._id,
+    requestedBy: author._id,
+    prescribedBy: prescriber._id,
+    prescriberName: prescriber.fullName,
+    entryType: verbal ? 'verbal' : 'cpoe',
+    ...(verbal && { verbalOrder: { readBack: true, cosignDueAt: hoursFromNow(24) } }),
     ...data,
   });
-  await audit(hospital, nurse, 'ORDER_CREATED', 'Order', order._id, { after: { status: order.status } });
+  order.$locals.creatorRole = author.role;
+  await order.save();
+  await audit(hospital, author, 'ORDER_CREATED', 'Order', order._id, { after: { status: order.status, entryType: order.entryType } });
   return order;
 }
 
@@ -88,15 +96,19 @@ async function seed() {
   const dept = (code) => hospital.departments.find((d) => d.code === code)._id;
 
   // Users (User.create runs the pre-save hook, so passwords get hashed)
-  const [admin, ph1, ph2, nurseOnc, nurseIcu, nurseEr] = await User.create([
+  const [admin, ph1, ph2, nurseOnc, nurseIcu, nurseEr, drOnc, drIcu, drEr] = await User.create([
     { fullName: 'System Admin', email: 'admin@hospisync.dev', role: 'admin', employeeId: 'ADM-001' },
     { fullName: 'Lina Haddad', email: 'pharmacist1@hospisync.dev', role: 'pharmacist', employeeId: 'PH-101' },
     { fullName: 'Omar Khalil', email: 'pharmacist2@hospisync.dev', role: 'pharmacist', employeeId: 'PH-102' },
     { fullName: 'Sara Nasser', email: 'nurse.onc@hospisync.dev', role: 'nurse', employeeId: 'RN-201', department: dept('ONC') },
     { fullName: 'Yousef Saleh', email: 'nurse.icu@hospisync.dev', role: 'nurse', employeeId: 'RN-202', department: dept('ICU') },
     { fullName: 'Rania Odeh', email: 'nurse.er@hospisync.dev', role: 'nurse', employeeId: 'RN-203', department: dept('ER') },
+    { fullName: 'Dr. Rami Haddad', email: 'doctor.onc@hospisync.dev', role: 'doctor', employeeId: 'MD-301', department: dept('ONC') },
+    { fullName: 'Dr. Noor Abbas', email: 'doctor.icu@hospisync.dev', role: 'doctor', employeeId: 'MD-302', department: dept('ICU') },
+    { fullName: 'Dr. Ziad Qasem', email: 'doctor.er@hospisync.dev', role: 'doctor', employeeId: 'MD-303', department: dept('ER') },
   ].map((u) => ({ ...u, password: PASSWORD, hospital: hospital._id })));
-  for (const u of [admin, ph1, ph2, nurseOnc, nurseIcu, nurseEr]) {
+  const everyone = [admin, ph1, ph2, drOnc, drIcu, drEr, nurseOnc, nurseIcu, nurseEr];
+  for (const u of everyone) {
     await audit(hospital, null, 'USER_CREATED', 'User', u._id);
   }
 
@@ -134,15 +146,15 @@ async function seed() {
   // Orders: one in every status so each dashboard has something to show
   const adultPatient = (mrn, name) => ({ mrn, name, weightKg: 72, heightCm: 170 });
 
-  // 1) pending · emergency · ER morphine
+  // 1) pending · emergency · ER morphine: VERBAL order by the ER nurse, waiting for Dr. Qasem's co-signature
   await createOrder(hospital, nurseEr, drug('MORPH'), {
     patient: { mrn: 'MRN-10001', name: 'Ahmad Ali', weightKg: 80, heightCm: 178 },
     dose: { prescribedValue: 4, basis: 'fixed', unit: 'mg' },
     route: 'IV_PUSH', priority: 'emergency', requiredBy: hoursFromNow(0.5),
-  });
+  }, drEr);
 
-  // 2) pending · routine · oncology doxorubicin 60 mg/m2
-  await createOrder(hospital, nurseOnc, drug('DOXO'), {
+  // 2) pending · routine · oncology doxorubicin 60 mg/m2 (doctor entered it)
+  await createOrder(hospital, drOnc, drug('DOXO'), {
     patient: adultPatient('MRN-10002', 'Mona Yaseen'),
     dose: { prescribedValue: 60, basis: 'bsa', unit: 'mg' },
     route: 'IV_INFUSION', diluent: { name: 'NS 0.9%', volumeMl: 250 }, infusionDurationMin: 30,
@@ -150,38 +162,47 @@ async function seed() {
   });
 
   // 3) preparing · urgent · ICU fentanyl 1 mcg/kg
-  const o3 = await createOrder(hospital, nurseIcu, drug('FENT'), {
+  const o3 = await createOrder(hospital, drIcu, drug('FENT'), {
     patient: { mrn: 'MRN-10003', name: 'Khaled Omar', weightKg: 90, heightCm: 182 },
     dose: { prescribedValue: 1, basis: 'weight', unit: 'mcg' },
     route: 'IV_INFUSION', priority: 'urgent', requiredBy: hoursFromNow(1),
   });
-  await move(hospital, o3, [['preparing', ph1]]);
+  await move(hospital, o3, [['verified', ph1], ['preparing', ph1]]);
 
   // 4) ready · routine · ICU TPN
-  const o4 = await createOrder(hospital, nurseIcu, drug('TPN-AD'), {
+  const o4 = await createOrder(hospital, drIcu, drug('TPN-AD'), {
     patient: adultPatient('MRN-10004', 'Huda Saeed'),
     dose: { prescribedValue: 1500, basis: 'fixed', unit: 'mL' },
     route: 'CENTRAL_LINE', infusionDurationMin: 1440, priority: 'routine', requiredBy: hoursFromNow(4),
   });
-  await move(hospital, o4, [['preparing', ph2], ['ready', ph2, { note: 'Double-checked by second pharmacist' }]]);
+  await move(hospital, o4, [['verified', ph2], ['preparing', ph2], ['ready', ph2, { note: 'Double-checked by second pharmacist' }]]);
 
   // 5) delivered · urgent · oncology cyclophosphamide 600 mg/m2
-  const o5 = await createOrder(hospital, nurseOnc, drug('CYCLO'), {
+  const o5 = await createOrder(hospital, drOnc, drug('CYCLO'), {
     patient: adultPatient('MRN-10005', 'Fadi Hamdan'),
     dose: { prescribedValue: 600, basis: 'bsa', unit: 'mg' },
     route: 'IV_INFUSION', diluent: { name: 'NS 0.9%', volumeMl: 500 }, infusionDurationMin: 60,
     priority: 'urgent', requiredBy: hoursFromNow(2),
   });
-  await move(hospital, o5, [['preparing', ph1], ['ready', ph1], ['delivered', nurseOnc]]);
+  await move(hospital, o5, [['verified', ph1], ['preparing', ph1], ['ready', ph1], ['delivered', nurseOnc]]);
 
   // 6) cancelled after compounding → counts as waste
-  const o6 = await createOrder(hospital, nurseOnc, drug('PACLI'), {
+  const o6 = await createOrder(hospital, drOnc, drug('PACLI'), {
     patient: adultPatient('MRN-10006', 'Reem Tawfiq'),
     dose: { prescribedValue: 175, basis: 'bsa', unit: 'mg' },
     route: 'IV_INFUSION', diluent: { name: 'D5W', volumeMl: 500 }, infusionDurationMin: 180,
     priority: 'routine', requiredBy: hoursFromNow(5),
   });
-  await move(hospital, o6, [['preparing', ph1], ['cancelled', nurseOnc, { reason: 'Treatment postponed: low neutrophil count' }]]);
+  await move(hospital, o6, [['verified', ph1], ['preparing', ph1], ['cancelled', drOnc, { reason: 'Treatment postponed: low neutrophil count' }]]);
+
+  // 7) verified · urgent · ICU potassium chloride: checked by the pharmacist, not started yet
+  const o7 = await createOrder(hospital, drIcu, drug('KCL'), {
+    patient: { mrn: 'MRN-10007', name: 'Samer Nabil', weightKg: 76, heightCm: 175 },
+    dose: { prescribedValue: 20, basis: 'fixed', unit: 'mEq' },
+    route: 'IV_INFUSION', diluent: { name: 'NS 0.9%', volumeMl: 500 }, infusionDurationMin: 240,
+    priority: 'urgent', requiredBy: hoursFromNow(2),
+  });
+  await move(hospital, o7, [['verified', ph2, { note: 'K+ 3.1 mmol/L confirmed, rate within limits' }]]);
 
   // ---------- summary ----------
   const counts = await Promise.all([Hospital, User, Drug, Order, AuditLog].map((M) => M.countDocuments()));
@@ -191,7 +212,7 @@ async function seed() {
   console.table({ hospitals: counts[0], users: counts[1], drugs: counts[2], orders: counts[3], auditLogs: counts[4] });
   console.table(Object.fromEntries(byStatus.map((s) => [s._id, s.n])));
   console.log(`Demo logins (password for all: ${PASSWORD})`);
-  console.table([admin, ph1, ph2, nurseOnc, nurseIcu, nurseEr].map((u) => ({ email: u.email, role: u.role })));
+  console.table(everyone.map((u) => ({ email: u.email, role: u.role })));
 }
 
 try {

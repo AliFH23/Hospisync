@@ -31,5 +31,5 @@ export const palettes = {
 };
 
 // Order status and priority → palette key (used by StatusChip / PriorityChip)
-export const STATUS_COLOR = { pending: 'info', preparing: 'warning', ready: 'success', delivered: 'secondary', cancelled: 'error' };
+export const STATUS_COLOR = { pending: 'info', verified: 'primary', preparing: 'warning', ready: 'success', delivered: 'secondary', cancelled: 'error' };
 export const PRIORITY_COLOR = { emergency: 'error', urgent: 'warning', routine: 'info' };

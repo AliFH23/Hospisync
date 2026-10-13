@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import crypto from 'node:crypto';
 import {
   ROLES, DRUG_CATEGORIES, DOSING_BASIS, DOSE_UNITS, ROUTES,
-  PRIORITY, PRIORITY_RANK, ORDER_STATUS, TRANSITIONS, TRANSITION_ROLES,
+  PRIORITY, PRIORITY_RANK, ORDER_STATUS, TRANSITIONS, TRANSITION_ROLES, ENTRY_TYPES,
 } from '../constants/enums.js';
 
 const { ObjectId } = mongoose.Schema.Types;
@@ -83,11 +83,26 @@ const orderSchema = new mongoose.Schema(
     status: { type: String, enum: Object.values(ORDER_STATUS), default: ORDER_STATUS.PENDING },
     statusHistory: [statusEventSchema],
 
+    // ---- Who ordered it ----
+    // prescribedBy = the doctor responsible for the prescription (always a doctor for new orders).
+    // requestedBy  = who typed it into the system: the doctor (CPOE) or a nurse (verbal order).
+    // Older demo orders predate the doctor role, so prescribedBy is only required on new orders.
+    prescribedBy: { type: ObjectId, ref: 'User', required: [function () { return this.isNew; }, 'Prescriber is required'] },
+    prescriberName: { type: String, trim: true }, // snapshot for lists, no populate needed
+    entryType: { type: String, enum: Object.values(ENTRY_TYPES), default: ENTRY_TYPES.CPOE },
+    verbalOrder: {
+      readBack: Boolean,  // nurse read the order back to the doctor and it was confirmed
+      cosignDueAt: Date,  // doctor must co-sign before this time
+      cosignedAt: Date,
+    },
+
     requestedBy: { type: ObjectId, ref: 'User', required: true },
+    verifiedBy: { type: ObjectId, ref: 'User' },
     preparedBy: { type: ObjectId, ref: 'User' },
     deliveredBy: { type: ObjectId, ref: 'User' },
     receivedBy: { type: ObjectId, ref: 'User' },
 
+    verifiedAt: Date,
     preparingAt: Date,
     readyAt: Date,
     deliveredAt: Date,
@@ -98,6 +113,7 @@ const orderSchema = new mongoose.Schema(
       by: { type: ObjectId, ref: 'User' },
       at: Date,
       wasCompounded: Boolean, // cancelled after preparation = wasted dose (Zero Waste dashboard)
+      rejectedByPharmacy: Boolean, // pharmacist refused the prescription at verification
     },
 
     // "synthetic" = generated demo history for the AI module (scripts/generate-history.js).
@@ -123,6 +139,7 @@ orderSchema.index({ hospital: 1, 'patient.mrn': 1, createdAt: -1 });           /
 orderSchema.index({ status: 1, expiresAt: 1 });                                // near-expiry alerts
 orderSchema.index({ hospital: 1, drug: 1, createdAt: 1 });                     // AI usage history
 orderSchema.index({ source: 1 });                                              // clear synthetic data
+orderSchema.index({ hospital: 1, prescribedBy: 1, createdAt: -1 });           // doctor's "my prescriptions"
 
 // ---------- Helpers ----------
 
@@ -173,7 +190,8 @@ orderSchema.pre('validate', function () {
 orderSchema.pre('save', function () {
   if (this.isNew) {
     if (this.statusHistory.length === 0) {
-      this.statusHistory.push({ from: null, to: ORDER_STATUS.PENDING, by: this.requestedBy, role: ROLES.NURSE });
+      // creatorRole is set by the controller; old scripts that don't set it created orders as nurses
+      this.statusHistory.push({ from: null, to: ORDER_STATUS.PENDING, by: this.requestedBy, role: this.$locals.creatorRole ?? ROLES.NURSE });
     }
     return;
   }
@@ -221,6 +239,10 @@ orderSchema.methods.transitionTo = function (to, user, opts = {}) {
 
   const now = new Date();
   switch (to) {
+    case ORDER_STATUS.VERIFIED:
+      this.verifiedBy = user._id;
+      this.verifiedAt = now;
+      break;
     case ORDER_STATUS.PREPARING:
       this.preparedBy = user._id;
       this.preparingAt = now;
@@ -249,6 +271,8 @@ orderSchema.methods.transitionTo = function (to, user, opts = {}) {
         by: user._id,
         at: now,
         wasCompounded: from === ORDER_STATUS.PREPARING || from === ORDER_STATUS.READY,
+        // A pharmacist cancelling a prescription they haven't verified = rejecting it
+        rejectedByPharmacy: from === ORDER_STATUS.PENDING && user.role === ROLES.PHARMACIST,
       };
       break;
     default:
@@ -258,6 +282,16 @@ orderSchema.methods.transitionTo = function (to, user, opts = {}) {
   this.status = to;
   this.statusHistory.push({ from, to, by: user._id, role: user.role, at: now, note: opts.note || opts.reason });
   this.$locals.viaStateMachine = true;
+  return this;
+};
+
+/** Doctor co-signs a verbal order entered by a nurse in their name. Caller then calls save(). */
+orderSchema.methods.cosign = function (user) {
+  const fail = (msg, code) => { const err = new Error(msg); err.statusCode = code; throw err; };
+  if (this.entryType !== ENTRY_TYPES.VERBAL) fail('Only verbal orders need a co-signature', 409);
+  if (String(this.prescribedBy) !== String(user._id)) fail('Only the prescribing doctor can co-sign this order', 403);
+  if (this.verbalOrder?.cosignedAt) fail('This order is already co-signed', 409);
+  this.verbalOrder.cosignedAt = new Date();
   return this;
 };
 

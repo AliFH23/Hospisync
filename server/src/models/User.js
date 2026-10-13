@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
-import { ROLES } from '../constants/enums.js';
+import { ROLES, WARD_ROLES } from '../constants/enums.js';
 
 const userSchema = new mongoose.Schema(
   {
@@ -23,10 +23,10 @@ const userSchema = new mongoose.Schema(
     role: { type: String, enum: Object.values(ROLES), required: true },
     employeeId: { type: String, required: true, trim: true, uppercase: true },
     hospital: { type: mongoose.Schema.Types.ObjectId, ref: 'Hospital', required: true, index: true },
-    // _id of an embedded department inside the hospital. Required for nurses (orders come from a ward).
+    // _id of an embedded department inside the hospital. Doctors and nurses work in a ward.
     department: {
       type: mongoose.Schema.Types.ObjectId,
-      required: [function () { return this.role === ROLES.NURSE; }, 'Nurses must belong to a department'],
+      required: [function () { return WARD_ROLES.includes(this.role); }, 'Doctors and nurses must belong to a department'],
     },
     isActive: { type: Boolean, default: true },
     lastLoginAt: Date,

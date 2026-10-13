@@ -1,4 +1,4 @@
-export const ACTIVE = ['pending', 'preparing', 'ready'];
+export const ACTIVE = ['pending', 'verified', 'preparing', 'ready'];
 const RANK = { emergency: 1, urgent: 2, routine: 3 };
 
 /** Time flags recomputed on the client every tick (server values go stale). */
@@ -20,7 +20,6 @@ export function withFlags(o, now) {
 export const byPriority = (a, b) =>
   (RANK[a.priority] - RANK[b.priority]) || (new Date(a.requiredBy) - new Date(b.requiredBy));
 
-/** "−5 min", "12 min", "3 h 50 min" (always Western digits) */
 /** Compact so it never wraps: "−5 min", "3h 50m", "1d 11h" (always Western digits) */
 export function formatMinutes(min) {
   const sign = min < 0 ? '−' : '';
@@ -37,3 +36,14 @@ export function formatMinutes(min) {
 }
 
 export const shortId = (orderNumber) => `…${orderNumber.slice(-6)}`;
+
+/** "Dr. Rami Haddad" → greeting "Dr. Rami", initials "RH" (a title is not a first name) */
+export function nameParts(fullName = '') {
+  const parts = fullName.trim().split(/\s+/);
+  const titled = /^dr\.?$/i.test(parts[0]) && parts.length > 1;
+  const rest = titled ? parts.slice(1) : parts;
+  return {
+    short: titled ? `${parts[0]} ${rest[0]}` : rest[0],
+    initials: rest.map((p) => p[0]).slice(0, 2).join('').toUpperCase(),
+  };
+}

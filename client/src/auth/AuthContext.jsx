@@ -4,7 +4,7 @@ import api, { tokenStore } from '../api/client';
 const AuthContext = createContext(null);
 
 // Where each role lands after login
-export const HOME_BY_ROLE = { nurse: '/ward', pharmacist: '/queue', admin: '/stock' };
+export const HOME_BY_ROLE = { doctor: '/prescriptions', nurse: '/ward', pharmacist: '/queue', admin: '/stock' };
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);

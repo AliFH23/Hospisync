@@ -16,6 +16,9 @@ import Button from '@mui/material/Button';
 import Alert from '@mui/material/Alert';
 import LinearProgress from '@mui/material/LinearProgress';
 import CircularProgress from '@mui/material/CircularProgress';
+import Checkbox from '@mui/material/Checkbox';
+import FormControlLabel from '@mui/material/FormControlLabel';
+import MenuItem from '@mui/material/MenuItem';
 import Dialog from '@mui/material/Dialog';
 import DialogTitle from '@mui/material/DialogTitle';
 import DialogContent from '@mui/material/DialogContent';
@@ -25,8 +28,9 @@ import CheckCircleRounded from '@mui/icons-material/CheckCircleRounded';
 import CancelRounded from '@mui/icons-material/CancelRounded';
 import RadioButtonUncheckedRounded from '@mui/icons-material/RadioButtonUncheckedRounded';
 import SendRounded from '@mui/icons-material/SendRounded';
+import PhoneInTalkRounded from '@mui/icons-material/PhoneInTalkRounded';
 import api, { errorMessage } from '../api/client';
-import { useAuth } from '../auth/AuthContext';
+import { useAuth, HOME_BY_ROLE } from '../auth/AuthContext';
 import { useNotify } from '../components/NotificationCenter';
 import Ltr from '../components/Ltr';
 import { PRIORITY_COLOR } from '../theme/tokens';
@@ -37,6 +41,9 @@ import { shortId } from '../utils/orders';
 const DEFAULT_LEAD = { emergency: 30, urgent: 60, routine: 240 };
 const QUICK = [30, 60, 120, 240];
 const INFUSION_ROUTES = ['IV_INFUSION', 'IV_PIGGYBACK', 'CENTRAL_LINE'];
+// Same rules as the server (VERBAL_ORDER_RULES): nurses may only relay urgent/emergency, non-chemo orders
+const VERBAL_PRIORITIES = ['emergency', 'urgent'];
+const VERBAL_BLOCKED = ['chemotherapy'];
 
 const EMPTY = {
   mrn: '', name: '', weightKg: '', heightCm: '', allergies: [],
@@ -85,7 +92,13 @@ export default function NewOrderPage() {
 
   const [drugs, setDrugs] = useState(null);
   const [loadError, setLoadError] = useState('');
-  const [f, setF] = useState(() => ({ ...EMPTY, requiredBy: toLocalInput(Date.now() + DEFAULT_LEAD.routine * 60000) }));
+  // Doctors prescribe (CPOE). Nurses can only enter a verbal / telephone order on a doctor's behalf.
+  const isVerbal = user.role === 'nurse';
+  const startPriority = isVerbal ? 'urgent' : 'routine';
+  const [f, setF] = useState(() => ({ ...EMPTY, priority: startPriority, requiredBy: toLocalInput(Date.now() + DEFAULT_LEAD[startPriority] * 60000) }));
+  const [prescribers, setPrescribers] = useState([]);
+  const [prescriberId, setPrescriberId] = useState('');
+  const [readBack, setReadBack] = useState(false);
   const [timeTouched, setTimeTouched] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [sending, setSending] = useState(false);
@@ -94,14 +107,21 @@ export default function NewOrderPage() {
 
   useEffect(() => {
     api.get('/drugs').then(({ data }) => setDrugs(data.drugs)).catch((err) => setLoadError(errorMessage(err)));
-  }, []);
+    if (isVerbal) {
+      // Doctors of my ward first, then the rest of the hospital
+      api.get('/users/prescribers').then(({ data }) => {
+        const mine = user.department?.code;
+        setPrescribers([...data.doctors].sort((a, b) => Number(b.departmentCode === mine) - Number(a.departmentCode === mine)));
+      }).catch((err) => setLoadError(errorMessage(err)));
+    }
+  }, [isVerbal, user.department?.code]);
 
   const set = (key) => (value) => { setF((s) => ({ ...s, [key]: value })); setServerError(''); };
   const onInput = (key) => (e) => set(key)(e.target.value);
 
-  // Changing priority moves the default deadline, unless the nurse already picked a time
+  // Changing priority moves the default deadline, unless a time was already picked
   const setPriority = (p) => {
-    if (!p) return;
+    if (!p || (isVerbal && !VERBAL_PRIORITIES.includes(p))) return;
     setF((s) => ({ ...s, priority: p, requiredBy: timeTouched ? s.requiredBy : toLocalInput(Date.now() + DEFAULT_LEAD[p] * 60000) }));
   };
 
@@ -128,6 +148,7 @@ export default function NewOrderPage() {
     route: !f.route,
     prescribed: !(Number(f.prescribed) > 0) || overMax,
     requiredBy: !deadlineOk,
+    ...(isVerbal && { prescriber: !prescriberId, readBack: !readBack }),
   };
   const blocked = Boolean(allergy) || overMax;
   const valid = !Object.values(errors).some(Boolean) && !blocked;
@@ -139,6 +160,10 @@ export default function NewOrderPage() {
     { label: allergy ? t('orderForm.errors.allergy', { allergy }) : t('orderForm.checks.allergy'), state: f.drug ? !allergy : null },
     { label: t('orderForm.checks.maxDose'), state: dose.value != null ? !overMax : null },
     { label: t('orderForm.checks.deadline'), state: f.requiredBy ? Boolean(deadlineOk) : null },
+    ...(isVerbal ? [
+      { label: t('verbal.checkPrescriber'), state: prescriberId ? true : submitted ? false : null },
+      { label: t('verbal.checkReadBack'), state: readBack ? true : submitted ? false : null },
+    ] : []),
   ];
 
   // ---- Submit ----
@@ -159,12 +184,13 @@ export default function NewOrderPage() {
       dose: { prescribedValue: Number(f.prescribed) },
       ...(f.diluentName.trim() && { diluent: { name: f.diluentName.trim(), volumeMl: num(f.diluentMl) } }),
       ...(confirmDuplicate && { confirmDuplicate: true }),
+      ...(isVerbal && { verbalOrder: { prescriberId, readBack } }),
     };
     try {
       const { data } = await api.post('/orders', body);
       const o = data.order;
-      notify({ kind: 'success', title: t('orderForm.created'), body: `${o.drugSnapshot.name} ${o.dose.calculatedValue} ${o.dose.unit} · ${shortId(o.orderNumber)}` });
-      navigate('/ward', { state: { created: o._id } });
+      notify({ kind: 'success', title: t(isVerbal ? 'verbal.created' : 'orderForm.created', { doctor: o.prescriberName }), body: `${o.drugSnapshot.name} ${o.dose.calculatedValue} ${o.dose.unit} · ${shortId(o.orderNumber)}` });
+      navigate(HOME_BY_ROLE[user.role], { state: { created: o._id } });
     } catch (err) {
       const msg = errorMessage(err);
       if (err.response?.status === 409 && /duplicate/i.test(msg)) setDuplicate(msg);
@@ -186,11 +212,33 @@ export default function NewOrderPage() {
     <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', lg: 'minmax(0,1fr) 340px' }, gap: 2.5, alignItems: 'start' }}>
       <Stack spacing={2.5} component="form" noValidate onSubmit={(e) => { e.preventDefault(); submit(); }}>
         <Box>
-          <Typography variant="h6">{t('orderForm.title')}</Typography>
+          <Typography variant="h6">{t(isVerbal ? 'verbal.title' : 'orderForm.title')}</Typography>
           <Typography variant="body2" color="text.secondary">
             {t('orderForm.subtitle')} · <Ltr>{user.department?.code}</Ltr>
           </Typography>
         </Box>
+
+        {/* Verbal / telephone order: who gave it, and the read-back confirmation */}
+        {isVerbal && (
+          <motion.div initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }}>
+            <Card sx={(th) => ({ p: { xs: 2, md: 2.5 }, border: '1.5px solid', borderColor: alpha(th.palette.warning.main, 0.5) })}>
+              <Stack direction="row" spacing={1.25} sx={{ alignItems: 'center', mb: 1 }}>
+                <PhoneInTalkRounded sx={{ color: 'warning.main' }} />
+                <Typography variant="subtitle1">{t('verbal.section')}</Typography>
+              </Stack>
+              <Typography variant="body2" color="text.secondary" sx={{ mb: 2, lineHeight: 1.7 }}>{t('verbal.rules')}</Typography>
+              <TextField select label={t('verbal.prescriber')} value={prescriberId} onChange={(e) => { setPrescriberId(e.target.value); setServerError(''); }}
+                error={show('prescriber')} helperText={!prescribers.length ? t('verbal.noDoctors') : ' '}>
+                {prescribers.map((d) => (
+                  <MenuItem key={d._id} value={d._id}>{d.fullName}{d.departmentCode && <>&nbsp;· <Ltr>{d.departmentCode}</Ltr></>}</MenuItem>
+                ))}
+              </TextField>
+              <FormControlLabel sx={{ mt: 0.5, alignItems: 'flex-start', '& .MuiCheckbox-root': { pt: 0.5 } }}
+                control={<Checkbox checked={readBack} onChange={(e) => setReadBack(e.target.checked)} color="warning" />}
+                label={<Typography variant="body2" sx={{ color: show('readBack') ? 'error.main' : 'text.primary', pt: 0.75 }}>{t('verbal.readBack')}</Typography>} />
+            </Card>
+          </motion.div>
+        )}
 
         {loadError && <Alert severity="error" sx={{ borderRadius: 3 }}>{loadError}</Alert>}
 
@@ -216,6 +264,7 @@ export default function NewOrderPage() {
             <Autocomplete options={drugs ?? []} loading={!drugs && !loadError} value={f.drug} onChange={(_, v) => setDrug(v)}
               groupBy={(d) => t(`category.${d.category}`)}
               getOptionLabel={(d) => d.name}
+              getOptionDisabled={(d) => isVerbal && VERBAL_BLOCKED.includes(d.category)}
               isOptionEqualToValue={(a, b) => a._id === b._id}
               filterOptions={(opts, { inputValue }) => {
                 const q = inputValue.trim().toLowerCase();
@@ -228,6 +277,7 @@ export default function NewOrderPage() {
                     <Typography variant="caption" color="text.secondary"><Ltr>{d.code} · {basisLabel(d)}{d.dosing.maxSingleDose != null ? ` · max ${d.dosing.maxSingleDose} ${d.dosing.unit}` : ''}</Ltr></Typography>
                   </Box>
                   {d.controlledSchedule && <Chip size="small" color="warning" variant="outlined" label={<Ltr>CII</Ltr>} />}
+                  {isVerbal && VERBAL_BLOCKED.includes(d.category) && <Chip size="small" variant="outlined" label={t('verbal.doctorOnly')} />}
                 </Box>
               )}
               renderInput={(params) => (
@@ -278,17 +328,18 @@ export default function NewOrderPage() {
           <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 1.25, mb: 2.5 }}>
             {['emergency', 'urgent', 'routine'].map((p) => {
               const active = f.priority === p;
+              const locked = isVerbal && !VERBAL_PRIORITIES.includes(p);
               const c = PRIORITY_COLOR[p];
               return (
-                <Box key={p} component={motion.button} type="button" whileTap={{ scale: 0.97 }} onClick={() => setPriority(p)}
+                <Box key={p} component={motion.button} type="button" whileTap={{ scale: locked ? 1 : 0.97 }} onClick={() => setPriority(p)} disabled={locked}
                   sx={(th) => ({
-                    cursor: 'pointer', font: 'inherit', textAlign: 'start', p: 1.5, borderRadius: 3, border: '1.5px solid',
+                    cursor: locked ? 'not-allowed' : 'pointer', opacity: locked ? 0.45 : 1, font: 'inherit', textAlign: 'start', p: 1.5, borderRadius: 3, border: '1.5px solid',
                     borderColor: active ? th.palette[c].main : th.palette.divider,
                     bgcolor: active ? alpha(th.palette[c].main, th.palette.mode === 'dark' ? 0.16 : 0.08) : 'transparent',
                     color: active ? th.palette[c].main : 'text.primary', transition: 'all .2s',
                   })}>
                   <Typography sx={{ fontWeight: 700, fontSize: 14, color: 'inherit' }}>{t(`priority.${p}`)}</Typography>
-                  <Typography variant="caption" color="text.secondary">{t(`orderForm.priorityHint.${p}`)}</Typography>
+                  <Typography variant="caption" color="text.secondary">{locked ? t('verbal.routineLocked') : t(`orderForm.priorityHint.${p}`)}</Typography>
                 </Box>
               );
             })}

@@ -21,6 +21,7 @@ import { useAuth, HOME_BY_ROLE } from '../auth/AuthContext';
 
 // Demo shortcuts are only shown in development builds
 const DEMO = [
+  { label: 'Doctor · ONC', email: 'doctor.onc@hospisync.dev' },
   { label: 'Pharmacist', email: 'pharmacist1@hospisync.dev' },
   { label: 'Nurse · ONC', email: 'nurse.onc@hospisync.dev' },
   { label: 'Admin', email: 'admin@hospisync.dev' },
@@ -30,7 +31,7 @@ const container = { hidden: {}, show: { transition: { staggerChildren: 0.08, del
 const item = { hidden: { opacity: 0, y: 16 }, show: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.22, 1, 0.36, 1] } } };
 
 function errorKey(err) {
-  if (!err.response) return 'network';
+  if (!err.response || err.response.status >= 500) return 'network';
   return { 400: 'required', 401: 'invalid', 403: 'deactivated', 429: 'tooMany' }[err.response.status] ?? 'invalid';
 }
 

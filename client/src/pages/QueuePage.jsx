@@ -26,6 +26,9 @@ import PendingActionsOutlined from '@mui/icons-material/PendingActionsOutlined';
 import ScienceOutlined from '@mui/icons-material/ScienceOutlined';
 import TaskAltRounded from '@mui/icons-material/TaskAltRounded';
 import WarningAmberRounded from '@mui/icons-material/WarningAmberRounded';
+import FactCheckOutlined from '@mui/icons-material/FactCheckOutlined';
+import PhoneInTalkRounded from '@mui/icons-material/PhoneInTalkRounded';
+import Divider from '@mui/material/Divider';
 import api, { errorMessage } from '../api/client';
 import { useAuth } from '../auth/AuthContext';
 import { useSocketEvent } from '../socket/SocketProvider';
@@ -36,8 +39,67 @@ import { StatusChip, PriorityChip } from '../components/Chips';
 import Ltr from '../components/Ltr';
 import useNow from '../hooks/useNow';
 import { ACTIVE, byPriority, formatMinutes, shortId, withFlags } from '../utils/orders';
+import { routeLabel } from '../utils/dose';
 
-const NEXT = { pending: 'preparing', preparing: 'ready' }; // pharmacist actions
+// Pharmacist actions: verify the prescription, then compound it
+const NEXT = { pending: 'verified', verified: 'preparing', preparing: 'ready' };
+
+/** Clinical check before compounding: everything the pharmacist needs on one screen */
+function VerifyDialog({ order: o, onClose, onVerify, onReject }) {
+  const { t } = useTranslation();
+  if (!o) return null;
+  const p = o.patient;
+  const per = o.dose.basis === 'bsa' ? '/m²' : o.dose.basis === 'weight' ? '/kg' : '';
+  const row = (label, value) => (
+    <Stack direction="row" sx={{ justifyContent: 'space-between', gap: 2, py: 0.5 }}>
+      <Typography variant="body2" color="text.secondary">{label}</Typography>
+      <Typography variant="body2" component="div" sx={{ fontWeight: 600, textAlign: 'end' }}>{value}</Typography>
+    </Stack>
+  );
+  return (
+    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+      <DialogTitle>
+        {t('verify.title')}
+        <Typography dir="ltr" sx={{ fontWeight: 700, fontSize: 18, textAlign: 'left' }}>{o.drugSnapshot.name}</Typography>
+      </DialogTitle>
+      <DialogContent>
+        {o.entryType === 'verbal' && (
+          <Alert severity="warning" icon={<PhoneInTalkRounded />} sx={{ mb: 2, borderRadius: 3 }}>
+            {o.verbalOrder?.cosignedAt ? t('verify.verbalSigned', { doctor: o.prescriberName }) : t('verify.verbalUnsigned', { doctor: o.prescriberName })}
+          </Alert>
+        )}
+        <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr', sm: '1fr 1fr' }, columnGap: 4 }}>
+          <Box>
+            <Typography variant="overline" color="text.secondary">{t('verify.patient')}</Typography>
+            {row(t('ordersPage.col.patient'), <><span dir="auto">{p.name}</span> · <Ltr>{p.mrn}</Ltr></>)}
+            {row(t('ordersPage.measurements'), <Ltr>{[p.weightKg && `${p.weightKg} kg`, p.heightCm && `${p.heightCm} cm`, p.bsa && `BSA ${p.bsa} m²`].filter(Boolean).join(' · ') || '—'}</Ltr>)}
+            {row(t('orderForm.fields.allergies'), p.allergies?.length ? <Ltr>{p.allergies.join(', ')}</Ltr> : t('verify.none'))}
+            {row(t('verify.prescriber'), o.prescriberName ?? '—')}
+            {row(t('ordersPage.col.ward'), <Ltr>{o.departmentCode}</Ltr>)}
+          </Box>
+          <Box>
+            <Typography variant="overline" color="text.secondary">{t('verify.prescription')}</Typography>
+            {row(t('ordersPage.prescribed'), <Ltr>{o.dose.prescribedValue} {o.dose.unit}{per}</Ltr>)}
+            {row(t('orderForm.summary.calculated'), <Ltr>{o.dose.calculatedValue} {o.dose.unit}</Ltr>)}
+            {row(t('orderForm.fields.route'), <Ltr>{routeLabel(o.route)}</Ltr>)}
+            {o.diluent?.name && row(t('orderForm.fields.diluent'), <Ltr>{o.diluent.name}{o.diluent.volumeMl ? ` ${o.diluent.volumeMl} mL` : ''}</Ltr>)}
+            {o.infusionDurationMin && row(t('orderForm.fields.duration'), <Ltr>{o.infusionDurationMin} min</Ltr>)}
+            {row(t('queue.col.priority'), <PriorityChip priority={o.priority} />)}
+          </Box>
+        </Box>
+        {o.notes && <Alert severity="info" icon={false} sx={{ mt: 2, borderRadius: 3 }}><span dir="auto">{o.notes}</span></Alert>}
+        <Divider sx={{ my: 2 }} />
+        <Typography variant="body2" color="text.secondary">{t('verify.checklist')}</Typography>
+      </DialogContent>
+      <DialogActions sx={{ px: 3, pb: 2, gap: 1 }}>
+        <Button color="error" onClick={() => onReject(o)}>{t('verify.reject')}</Button>
+        <Box sx={{ flex: 1 }} />
+        <Button color="inherit" onClick={onClose}>{t('common.back')}</Button>
+        <Button variant="contained" startIcon={<FactCheckOutlined />} onClick={() => onVerify(o)}>{t('verify.confirm')}</Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 const NEW_HIGHLIGHT_MS = 10000;
 
 function OrderRow({ o, isNew, canPrepare, busy, onAdvance, onMenu }) {
@@ -72,13 +134,15 @@ function OrderRow({ o, isNew, canPrepare, busy, onAdvance, onMenu }) {
           </Stack>
           <Typography noWrap variant="caption" color="text.secondary" component="div">
             <Ltr>{o.dose.calculatedValue} {o.dose.unit}</Ltr> · {o.route.replaceAll('_', ' ').toLowerCase()} · <Ltr>{o.patient.mrn}</Ltr> · <Ltr>{shortId(o.orderNumber)}</Ltr>
+            {o.prescriberName && <> · {o.prescriberName}</>}
+            {o.entryType === 'verbal' && <Box component="span" sx={{ color: 'warning.main', fontWeight: 700 }}> · {t('verbal.badge')}</Box>}
           </Typography>
         </Box>
 
         <Typography variant="body2" color="text.secondary" sx={{ display: { xs: 'none', md: 'block' } }}><Ltr>{o.departmentCode}</Ltr></Typography>
 
         <Tooltip title={o.status === 'ready' && o.minutesToExpiry != null ? t('queue.expiresIn', { time: formatMinutes(o.minutesToExpiry) }) : ''}>
-          <Typography variant="body2" sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5,whiteSpace: 'nowrap', fontWeight: 600, color: late ? 'error.main' : o.expiringSoon || o.isExpired ? 'warning.main' : 'text.primary' }}>
+          <Typography variant="body2" sx={{ display: { xs: 'none', md: 'flex' }, alignItems: 'center', gap: 0.5, whiteSpace: 'nowrap', fontWeight: 600, color: late ? 'error.main' : o.expiringSoon || o.isExpired ? 'warning.main' : 'text.primary' }}>
             {(late || o.isExpired) && <WarningAmberRounded sx={{ fontSize: 16 }} />}
             <Ltr>{formatMinutes(o.minutesToDeadline)}</Ltr>
           </Typography>
@@ -122,6 +186,7 @@ export default function QueuePage() {
   const [menu, setMenu] = useState(null);          // { anchor, order }
   const [cancelling, setCancelling] = useState(null); // order being cancelled
   const [reason, setReason] = useState('');
+  const [verifying, setVerifying] = useState(null); // order open in the verification dialog
   const timers = useRef([]);
 
   const canPrepare = user.role === 'pharmacist';
@@ -182,7 +247,12 @@ export default function QueuePage() {
     try {
       const { data } = await api.patch(`/orders/${o._id}/status`, { status: 'cancelled', reason: reason.trim(), version: o.__v });
       upsert(data.order);
-      notify({ kind: data.order.cancellation?.wasCompounded ? 'warning' : 'info', title: t('queue.cancelled', { id: shortId(o.orderNumber) }), body: data.order.cancellation?.wasCompounded ? t('queue.wasteRecorded') : '' });
+      const c = data.order.cancellation ?? {};
+      notify({
+        kind: c.wasCompounded ? 'warning' : 'info',
+        title: t(c.rejectedByPharmacy ? 'verify.rejected' : 'queue.cancelled', { id: shortId(o.orderNumber) }),
+        body: c.wasCompounded ? t('queue.wasteRecorded') : c.rejectedByPharmacy ? t('verify.doctorNotified') : '',
+      });
     } catch (err) {
       notify({ kind: 'error', title: t('queue.actionFailed'), body: errorMessage(err) });
       load();
@@ -198,6 +268,7 @@ export default function QueuePage() {
   const shown = tab === 'all' ? view : view.filter((o) => o.status === tab);
   const kpi = {
     pending: count('pending'),
+    verified: count('verified'),
     emergency: view.filter((o) => o.status === 'pending' && o.priority === 'emergency').length,
     preparing: count('preparing'),
     ready: count('ready'),
@@ -209,9 +280,10 @@ export default function QueuePage() {
     <Stack spacing={2.5}>
       {/* KPIs */}
       <Box sx={{ display: 'grid', gridTemplateColumns: { xs: '1fr 1fr', lg: 'repeat(4, 1fr)' }, gap: 2 }}>
-        <KpiCard index={0} color="info" icon={<PendingActionsOutlined />} label={t('status.pending')} value={kpi.pending}
+        <KpiCard index={0} color="info" icon={<PendingActionsOutlined />} label={t('queue.kpi.toVerify')} value={kpi.pending}
           hint={kpi.emergency ? t('queue.kpi.emergency', { count: kpi.emergency }) : null} />
-        <KpiCard index={1} color="warning" icon={<ScienceOutlined />} label={t('status.preparing')} value={kpi.preparing} />
+        <KpiCard index={1} color="warning" icon={<ScienceOutlined />} label={t('status.preparing')} value={kpi.preparing}
+          hint={kpi.verified ? t('queue.kpi.verifiedWaiting', { count: kpi.verified }) : null} />
         <KpiCard index={2} color="success" icon={<TaskAltRounded />} label={t('queue.kpi.ready')} value={kpi.ready}
           hint={kpi.expiring ? t('queue.kpi.expiring', { count: kpi.expiring }) : null} />
         <KpiCard index={3} color="error" icon={<WarningAmberRounded />} label={t('queue.kpi.overdue')} value={kpi.overdue} />
@@ -243,7 +315,8 @@ export default function QueuePage() {
             <AnimatePresence initial={false}>
               {shown.map((o) => (
                 <OrderRow key={o._id} o={o} isNew={newIds.has(o._id)} canPrepare={canPrepare}
-                  busy={busyId === o._id} onAdvance={advance} onMenu={(anchor, order) => setMenu({ anchor, order })} />
+                  busy={busyId === o._id} onAdvance={(order, next) => (next === 'verified' ? setVerifying(order) : advance(order, next))}
+                  onMenu={(anchor, order) => setMenu({ anchor, order })} />
               ))}
             </AnimatePresence>
 
@@ -264,14 +337,20 @@ export default function QueuePage() {
         </motion.div>
       </Box>
 
+      <VerifyDialog order={verifying} onClose={() => setVerifying(null)}
+        onVerify={(o) => { setVerifying(null); advance(o, 'verified'); }}
+        onReject={(o) => { setVerifying(null); setCancelling(o); }} />
+
       {/* Row menu */}
       <Menu anchorEl={menu?.anchor} open={!!menu} onClose={() => setMenu(null)}>
-        <MenuItem onClick={() => { setCancelling(menu.order); setMenu(null); }} sx={{ color: 'error.main' }}>{t('queue.cancelOrder')}</MenuItem>
+        <MenuItem onClick={() => { setCancelling(menu.order); setMenu(null); }} sx={{ color: 'error.main' }}>
+          {menu?.order.status === 'pending' && canPrepare ? t('verify.rejectMenu') : t('queue.cancelOrder')}
+        </MenuItem>
       </Menu>
 
       {/* Cancel dialog: reason is mandatory (audit trail) */}
       <Dialog open={!!cancelling} onClose={() => setCancelling(null)} fullWidth maxWidth="xs">
-        <DialogTitle>{t('queue.cancelTitle')}</DialogTitle>
+        <DialogTitle>{cancelling?.status === 'pending' && canPrepare ? t('verify.rejectTitle') : t('queue.cancelTitle')}</DialogTitle>
         <DialogContent>
           {cancelling && ['preparing', 'ready'].includes(cancelling.status) && (
             <Alert severity="warning" sx={{ mb: 2, borderRadius: 3 }}>{t('queue.cancelWasteWarning')}</Alert>
@@ -280,7 +359,9 @@ export default function QueuePage() {
         </DialogContent>
         <DialogActions sx={{ px: 3, pb: 2 }}>
           <Button onClick={() => setCancelling(null)} color="inherit">{t('common.back')}</Button>
-          <Button onClick={confirmCancel} color="error" variant="contained" disabled={reason.trim().length < 3}>{t('queue.confirmCancel')}</Button>
+          <Button onClick={confirmCancel} color="error" variant="contained" disabled={reason.trim().length < 3}>
+            {cancelling?.status === 'pending' && canPrepare ? t('verify.reject') : t('queue.confirmCancel')}
+          </Button>
         </DialogActions>
       </Dialog>
     </Stack>
