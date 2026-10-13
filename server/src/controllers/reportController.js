@@ -1,4 +1,4 @@
-import { Order } from '../models/index.js';
+import { Order, Hospital } from '../models/index.js';
 import AppError from '../utils/AppError.js';
 import { ORDER_STATUS } from '../constants/enums.js';
 
@@ -19,7 +19,7 @@ function parseRange(query) {
  * A dose counts as WASTED when it was cancelled after compounding started.
  * Waste rate = wasted / (delivered + wasted) among compounded doses in the range.
  */
-export function wastePipeline(hospitalId, from, to) {
+export function wastePipeline(hospitalId, from, to, timezone = 'Asia/Amman') {
   const range = { $gte: from, $lte: to };
   const wasted = { $eq: ['$status', ORDER_STATUS.CANCELLED] };
 
@@ -77,6 +77,24 @@ export function wastePipeline(hospitalId, from, to) {
           { $sort: { wasteCost: -1 } },
           { $limit: 10 },
         ],
+        // Month by month in the hospital's local time: drives the trend chart
+        byMonth: [
+          {
+            $group: {
+              _id: {
+                $dateToString: {
+                  format: '%Y-%m',
+                  date: { $cond: [wasted, '$cancellation.at', '$deliveredAt'] },
+                  timezone,
+                },
+              },
+              compounded: { $sum: 1 },
+              wasted: { $sum: '$wasted' },
+              wasteCost: { $sum: { $multiply: ['$cost', '$wasted'] } },
+            },
+          },
+          { $sort: { _id: 1 } },
+        ],
         topReasons: [
           { $match: { wasted: 1 } },
           { $group: { _id: { $toLower: { $trim: { input: '$cancellation.reason' } } }, count: { $sum: 1 } } },
@@ -96,8 +114,10 @@ export async function getWasteReport(req, res) {
   const { from, to } = parseRange(req.query);
   const hospital = req.user.hospital;
 
+  const h = await Hospital.findById(hospital).select('timezone').lean();
+
   const [[facets], atRisk] = await Promise.all([
-    Order.aggregate(wastePipeline(hospital, from, to)),
+    Order.aggregate(wastePipeline(hospital, from, to, h?.timezone || 'Asia/Amman')),
     // Ready doses already past expiry: waste that hasn't been recorded yet
     Order.find({ hospital, status: ORDER_STATUS.READY, expiresAt: { $lte: new Date() } })
       .select('orderNumber departmentCode drugSnapshot.name drugSnapshot.unitCost dose.calculatedValue dose.unit expiresAt')
@@ -132,6 +152,13 @@ export async function getWasteReport(req, res) {
       wastedDoses: d.doses,
       wastedAmount: `${round2(d.amount)} ${d.unit}`,
       wasteCost: round2(d.wasteCost),
+    })),
+    byMonth: facets.byMonth.map((m) => ({
+      month: m._id,
+      compoundedDoses: m.compounded,
+      wastedDoses: m.wasted,
+      wasteRatePercent: rate(m.wasted, m.compounded),
+      wasteCost: round2(m.wasteCost),
     })),
     topReasons: facets.topReasons.map((r) => ({ reason: r._id, count: r.count })),
     expiredNotDiscarded: {

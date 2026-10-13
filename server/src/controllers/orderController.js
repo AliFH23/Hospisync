@@ -225,12 +225,13 @@ export async function getQueue(req, res) {
  *   status      active | pending,ready,...
  *   department  department _id (pharmacist/admin only)
  *   mrn         exact patient MRN
+ *   q           search box: exact MRN or part of the order number
  *   priority    emergency | urgent | routine
  *   from, to    createdAt range (ISO dates)
  *   page, limit pagination (limit max 100, default 20)
  */
 export async function listOrders(req, res) {
-  const { status, department, mrn, priority, from, to } = req.query;
+  const { status, department, mrn, priority, from, to, q } = req.query;
   const filter = scopeFor(req.user);
 
   const statuses = parseStatuses(status);
@@ -241,6 +242,12 @@ export async function listOrders(req, res) {
     filter.department = department; // invalid ObjectId → CastError → 400
   }
   if (mrn !== undefined) filter['patient.mrn'] = String(mrn).trim().toUpperCase();
+  if (q !== undefined) {
+    const term = String(q).trim().toUpperCase();
+    if (term.length < 2 || term.length > 40) throw AppError.badRequest('Search must be 2-40 characters');
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); // matched literally, never as a regex
+    filter.$or = [{ 'patient.mrn': term }, { orderNumber: { $regex: escaped } }];
+  }
   if (priority !== undefined) {
     if (!['emergency', 'urgent', 'routine'].includes(priority)) throw AppError.badRequest('Invalid priority');
     filter.priority = priority;

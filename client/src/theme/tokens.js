@@ -7,7 +7,7 @@ export const palettes = {
     text: { primary: '#1F2D3D', secondary: '#5F6F7E', disabled: '#9AA8B3' },
     divider: '#E6ECEE',
     primary: { main: '#0F8B8D', light: '#E3F2F1', dark: '#0B6E70', contrastText: '#FFFFFF' },
-    secondary: { main: '#3D5A80', contrastText: '#FFFFFF' },
+    secondary: { main: '#3D5A80', light: '#E6ECF3', contrastText: '#FFFFFF' },
     error: { main: '#D64545', light: '#FBEAEA' },
     warning: { main: '#D9822B', light: '#FBF0E4' },
     success: { main: '#2E9E6B', light: '#E5F4EC' },

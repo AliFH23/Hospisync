@@ -64,7 +64,13 @@ export async function getMe(req, res) {
     success: true,
     user: {
       ...req.user,
-      hospital: hospital && { _id: hospital._id, name: hospital.name, code: hospital.code },
+      hospital: hospital && {
+        _id: hospital._id, name: hospital.name, code: hospital.code,
+        // Staff filter orders by ward; nurses only ever see their own
+        ...(req.user.role !== 'nurse' && {
+          departments: hospital.departments.filter((d) => d.isActive !== false).map((d) => ({ _id: d._id, name: d.name, code: d.code })),
+        }),
+      },
       department: department ? { _id: department._id, name: department.name, code: department.code } : null,
     },
   });

@@ -42,6 +42,14 @@ export function createAppTheme(mode, direction) {
       MuiTextField: { defaultProps: { fullWidth: true } },
       MuiOutlinedInput: { styleOverrides: { root: { borderRadius: 12 } } },
       MuiTooltip: { defaultProps: { arrow: true } },
+      // MUI's default dark "standard" alert is almost black: use a soft tint of the severity color instead
+      MuiAlert: {
+        styleOverrides: {
+          root: ({ ownerState, theme }) => (mode === 'dark' && (ownerState.variant ?? 'standard') === 'standard'
+            ? { backgroundColor: alpha(theme.palette[ownerState.severity ?? 'success'].main, 0.12), color: theme.palette.text.primary }
+            : {}),
+        },
+      },
     },
   });
 }
