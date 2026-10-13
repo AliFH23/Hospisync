@@ -59,6 +59,7 @@ def usage_summary(hospital: str = HospitalQ, days: int = Query(365, ge=28, le=73
 # Stock levels change with every order -> NEVER cached, always read live.
 _CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
 CACHE_SECONDS = 600
+HISTORY_DAYS = 42  # 6 weeks of actuals returned with each forecast
 
 
 def get_forecasts(hospital: str, horizon: int, refresh: bool = False) -> dict:
@@ -76,6 +77,14 @@ def get_forecasts(hospital: str, horizon: int, refresh: bool = False) -> dict:
         "hospital": h,
         "drugs": drugs,
         "forecasts": {drug_id: forecast_series(frame[("amount", drug_id)], horizon) for drug_id in drugs},
+        # Recent actual usage, so the UI can draw "history -> forecast" on one chart
+        "history": {
+            drug_id: [
+                {"date": d.strftime("%Y-%m-%d"), "amount": round(float(v), 2)}
+                for d, v in frame[("amount", drug_id)].tail(HISTORY_DAYS).items()
+            ]
+            for drug_id in drugs
+        },
         "trainedOn": {"from": str(frame.index[0].date()), "to": str(frame.index[-1].date())},
         "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
@@ -99,6 +108,7 @@ def forecast(hospital: str = HospitalQ, horizon: int = HorizonQ, refresh: bool =
             "backtestTotalError": fc.total_error,
             "forecastTotal": fc.total,
             "forecast": [{"date": d, "amount": v} for d, v in zip(fc.dates, fc.daily)],
+            "history": f["history"][drug_id],
         })
     return {
         "hospital": f["hospital"]["code"],
